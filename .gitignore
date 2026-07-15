@@ -1,2 +1,7 @@
 # Project exclude paths
 /out/
+/target/
+/.idea/
+*.iml
+profile.json
+words_database.json
