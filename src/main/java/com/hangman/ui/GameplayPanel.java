@@ -22,6 +22,10 @@ public class GameplayPanel extends JPanel {
     private PlayerProfile playerProfile;
     private Word.Difficulty currentDifficulty = Word.Difficulty.EASY;
 
+    // Layering controls for overlays
+    private JLayeredPane layeredPane;
+    private GameOverlayPanel overlayPanel;
+
     // GUI components
     private JLabel hangmanImage;
     private JLabel categoryLabel;
@@ -30,6 +34,7 @@ public class GameplayPanel extends JPanel {
     private JLabel streakLabel;
     private JLabel coinsLabel;
     private JProgressBar xpProgressBar;
+    private JProgressBar timerProgress; // Round countdown bar
     
     private JPanel headerPanel;
     private JPanel mainPanel;
@@ -43,6 +48,10 @@ public class GameplayPanel extends JPanel {
     private Font customFontTitle;
     private Font customFontMedium;
     private Font customFontSmall;
+
+    // Timer variables
+    private int timeLeftDeciSeconds = 300; // 30.0 seconds
+    private Timer roundTimer;
 
     public GameplayPanel(ScreenController controller) {
         this.controller = controller;
@@ -62,14 +71,21 @@ public class GameplayPanel extends JPanel {
         customFontSmall = CustomTools.createFont(CommonConstants.FONT_PATH, 13f);
 
         initComponents();
+        setupKeyBindings();
+        setupRoundTimer();
         applyTheme();
+        
+        // Start the countdown on launch
+        roundTimer.start();
     }
 
     private void initComponents() {
-        // Main container panel
+        // Base layered pane wrapper
+        layeredPane = new JLayeredPane();
+
+        // Main layout panel
         mainPanel = new JPanel(new BorderLayout(10, 10));
         mainPanel.setBorder(new EmptyBorder(15, 15, 15, 15));
-        add(mainPanel, BorderLayout.CENTER);
 
         // 1. Header panel (Dashboard)
         headerPanel = new JPanel(new GridBagLayout());
@@ -118,7 +134,6 @@ public class GameplayPanel extends JPanel {
         themeSelector.addActionListener(e -> {
             ThemeManager.setTheme((ThemeManager.Theme) themeSelector.getSelectedItem());
             applyTheme();
-            // Propagate theme changes across all screen components
             controller.repaint();
             controller.revalidate();
             SoundManager.playSound("resources/sounds/click.wav");
@@ -160,13 +175,24 @@ public class GameplayPanel extends JPanel {
         centerGbc.weighty = 0.5;
         centerPanel.add(imgContainer, centerGbc);
 
+        // Timer Progress Bar
+        timerProgress = new JProgressBar(0, 300);
+        timerProgress.setValue(300);
+        timerProgress.setStringPainted(false);
+        timerProgress.setBorder(BorderFactory.createEmptyBorder());
+        timerProgress.setPreferredSize(new Dimension(0, 6)); // thin styling
+
+        centerGbc.gridy = 1;
+        centerGbc.weighty = 0.02;
+        centerPanel.add(timerProgress, centerGbc);
+
         // Category Tag
         categoryLabel = new JLabel(gameEngine.getCurrentWord().getCategory());
         categoryLabel.setFont(customFontMedium);
         categoryLabel.setHorizontalAlignment(SwingConstants.CENTER);
         categoryLabel.setBorder(new EmptyBorder(5, 10, 5, 10));
 
-        centerGbc.gridy = 1;
+        centerGbc.gridy = 2;
         centerGbc.weighty = 0.05;
         centerPanel.add(categoryLabel, centerGbc);
 
@@ -175,7 +201,7 @@ public class GameplayPanel extends JPanel {
         hiddenWordLabel.setFont(customFontTitle);
         hiddenWordLabel.setHorizontalAlignment(SwingConstants.CENTER);
 
-        centerGbc.gridy = 2;
+        centerGbc.gridy = 3;
         centerGbc.weighty = 0.15;
         centerPanel.add(hiddenWordLabel, centerGbc);
 
@@ -232,12 +258,74 @@ public class GameplayPanel extends JPanel {
         quitBtn.addActionListener(e -> {
             SoundManager.playSound("resources/sounds/click.wav");
             playerProfile.save();
+            roundTimer.stop();
             controller.showScreen("DASHBOARD");
         });
         optionsBar.add(quitBtn, BorderLayout.EAST);
 
         footerPanel.add(optionsBar, BorderLayout.SOUTH);
         mainPanel.add(footerPanel, BorderLayout.SOUTH);
+
+        // Overlay dialog
+        overlayPanel = new GameOverlayPanel(this, controller);
+
+        // Register components in layered pane
+        layeredPane.add(mainPanel, JLayeredPane.DEFAULT_LAYER);
+        layeredPane.add(overlayPanel, JLayeredPane.MODAL_LAYER);
+
+        // Ensure bounds resize dynamically with window dimensions
+        layeredPane.addComponentListener(new java.awt.event.ComponentAdapter() {
+            @Override
+            public void componentResized(java.awt.event.ComponentEvent e) {
+                mainPanel.setBounds(0, 0, layeredPane.getWidth(), layeredPane.getHeight());
+                overlayPanel.setBounds(0, 0, layeredPane.getWidth(), layeredPane.getHeight());
+            }
+        });
+
+        add(layeredPane, BorderLayout.CENTER);
+    }
+
+    private void setupKeyBindings() {
+        for (char c = 'A'; c <= 'Z'; c++) {
+            final String letter = Character.toString(c);
+            final int index = c - 'A';
+            String actionKey = "guess_" + letter;
+
+            getInputMap(JComponent.WHEN_IN_FOCUSED_WINDOW).put(
+                    KeyStroke.getKeyStroke(c), actionKey
+            );
+            getActionMap().put(actionKey, new AbstractAction() {
+                @Override
+                public void actionPerformed(java.awt.event.ActionEvent e) {
+                    if (letterButtons[index].isEnabled() && !overlayPanel.isVisible() && GameplayPanel.this.isShowing()) {
+                        handleLetterGuess(letter, letterButtons[index]);
+                    }
+                }
+            });
+        }
+    }
+
+    private void setupRoundTimer() {
+        roundTimer = new Timer(100, e -> {
+            if (overlayPanel.isVisible() || !GameplayPanel.this.isShowing()) {
+                roundTimer.stop();
+                return;
+            }
+            timeLeftDeciSeconds--;
+            timerProgress.setValue(timeLeftDeciSeconds);
+
+            if (timeLeftDeciSeconds < 100) {
+                timerProgress.setForeground(ThemeManager.getIncorrectColor());
+            } else {
+                timerProgress.setForeground(ThemeManager.getSecondaryColor());
+            }
+
+            if (timeLeftDeciSeconds <= 0) {
+                roundTimer.stop();
+                SoundManager.playSound("resources/sounds/gameover.wav");
+                handleMatchEnd(false);
+            }
+        });
     }
 
     private void handleLetterGuess(String character, JButton button) {
@@ -257,6 +345,9 @@ public class GameplayPanel extends JPanel {
             button.setBackground(ThemeManager.getIncorrectColor());
             CustomTools.updateImage(hangmanImage, "resources/" + (gameEngine.getIncorrectGuesses() + 1) + ".png");
             SoundManager.playSound("resources/sounds/incorrect.wav");
+            
+            // Screenshake physical feedback on input errors
+            AnimationEngine.shake(hangmanImage);
             
             if (gameEngine.isGameOver()) {
                 SoundManager.playSound("resources/sounds/gameover.wav");
@@ -294,19 +385,20 @@ public class GameplayPanel extends JPanel {
     }
 
     private void handleMatchEnd(boolean won) {
+        roundTimer.stop();
+
+        // Calculate time reward bonuses for fast speeds!
+        int timeBonus = won ? (timeLeftDeciSeconds / 10) : 0;
+        gameEngine.addScore(timeBonus);
+        
         playerProfile.recordGame(won, gameEngine.getScore());
         refreshStats();
 
-        String resultMsg = won ? 
-                "Splendid job! You guessed the word: " + gameEngine.getCurrentWord().getWord() + "\nEarned: +30 Coins, +50 XP" : 
-                "Alas! The correct word was: " + gameEngine.getCurrentWord().getWord();
+        String rewardText = won ? 
+                String.format("+30 Coins, +50 XP (Time Bonus: +%d pts)", timeBonus) : 
+                "Streak Reset 💔";
 
-        JOptionPane.showMessageDialog(controller, 
-                resultMsg, 
-                won ? "Victory!" : "Game Over", 
-                JOptionPane.INFORMATION_MESSAGE);
-
-        resetMatch();
+        overlayPanel.showResult(won, gameEngine.getCurrentWord().getWord(), rewardText);
     }
 
     public void resetMatch() {
@@ -321,6 +413,15 @@ public class GameplayPanel extends JPanel {
         for (JButton btn : letterButtons) {
             btn.setEnabled(true);
             btn.setBackground(ThemeManager.getPrimaryColor());
+        }
+
+        // Reset timer
+        timeLeftDeciSeconds = 300;
+        timerProgress.setValue(300);
+        timerProgress.setForeground(ThemeManager.getSecondaryColor());
+        
+        if (roundTimer != null) {
+            roundTimer.restart();
         }
     }
 
@@ -353,6 +454,9 @@ public class GameplayPanel extends JPanel {
 
         xpProgressBar.setForeground(accent);
         xpProgressBar.setBackground(bg);
+
+        timerProgress.setBackground(bg);
+        timerProgress.setForeground(accent);
 
         // Update keyboard buttons
         for (JButton btn : letterButtons) {
